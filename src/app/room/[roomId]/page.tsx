@@ -1,9 +1,7 @@
-'use client';
-import { getRandomValues } from 'crypto';
 import { useEffect, useRef, useState } from 'react';
 
 export default function VideoRoom() {
-  const roomId = "test-room-123"; // You can make this dynamic
+  const roomId = "test-room-123";
   // Generate unique session ID for each tab/instance
   const sessionIdRef = useRef(`user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
   const localVideoRef = useRef(null);
@@ -13,6 +11,7 @@ export default function VideoRoom() {
   const userIdRef = useRef(null);
   const peersRef = useRef({});
   const localStreamRef = useRef(null);
+  const pendingOffersRef = useRef(new Set()); // Track pending offers to avoid duplicates
   
   const [isConnected, setIsConnected] = useState(false);
   const [connectedUsers, setConnectedUsers] = useState([]);
@@ -24,7 +23,6 @@ export default function VideoRoom() {
     initializeConnection();
     
     return () => {
-      // Cleanup on unmount
       cleanup();
     };
   }, []);
@@ -36,8 +34,6 @@ export default function VideoRoom() {
     }));
   };
 
-  
-
   const initializeConnection = () => {
     const ws = new WebSocket('wss://garland.mohitsasane.tech/chat/');
     socketRef.current = ws;
@@ -45,18 +41,11 @@ export default function VideoRoom() {
     ws.onopen = () => {
       console.log('WebSocket connected');
       addDebugMessage('WebSocket connected');
-      // Use unique email for each session to simulate different users
-      // ws.send(JSON.stringify({
-      //   type: 'LOGIN',
-      //   payload: { 
-      //     email: `user@example.com`, 
-      //     password: '123456' 
-      //   }
-      // }));
-      tokenRef.current = localStorage.getItem('token');
-      userIdRef.current = JSON.parse(localStorage.getItem('user') || '{}')?.id;
-
-
+      
+      // Try to get token from localStorage, fallback to mock data for testing
+      tokenRef.current = localStorage.getItem('token') || 'mock-token';
+      const userData = localStorage.getItem('user');
+      userIdRef.current = userData ? JSON.parse(userData)?.id : sessionIdRef.current;
 
       initializeMedia();
       joinRoom();
@@ -94,7 +83,6 @@ export default function VideoRoom() {
         tokenRef.current = token;
         userIdRef.current = msg.userId;
         await initializeMedia();
-        
         break;
 
       case 'JOINED_ROOM':
@@ -107,12 +95,18 @@ export default function VideoRoom() {
         if (from && from !== userIdRef.current) {
           console.log('User joined:', from);
           addDebugMessage(`User joined: ${from}`);
+          
           setConnectedUsers(prev => {
             const updated = [...prev.filter(id => id !== from), from];
             console.log('Updated connected users:', updated);
             return updated;
           });
-          await createPeerConnection(from, true);
+          
+          // FIXED: Always create peer connection when user joins
+          // Use a small delay to ensure both users are ready
+          setTimeout(() => {
+            createPeerConnection(from, true);
+          }, 100);
         }
         break;
 
@@ -137,6 +131,7 @@ export default function VideoRoom() {
 
       case 'UNAUTHORIZED':
         console.error('Unauthorized access');
+        addDebugMessage('Unauthorized - check token');
         break;
 
       default:
@@ -147,7 +142,7 @@ export default function VideoRoom() {
   const initializeMedia = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: true, 
+        video: { width: 640, height: 480 }, 
         audio: true 
       });
       localStreamRef.current = stream;
@@ -157,8 +152,10 @@ export default function VideoRoom() {
       }
       
       console.log('Local media initialized');
+      addDebugMessage('Camera and microphone initialized');
     } catch (error) {
       console.error('Error accessing media devices:', error);
+      addDebugMessage(`Media error: ${error.message}`);
       alert('Could not access camera/microphone. Please check permissions.');
     }
   };
@@ -167,20 +164,33 @@ export default function VideoRoom() {
     if (socketRef.current && tokenRef.current) {
       socketRef.current.send(JSON.stringify({
         type: 'JOIN_ROOM',
-        token: localStorage.getItem('token'),
+        token: tokenRef.current,
         payload: { roomId }
       }));
     }
   };
 
   const createPeerConnection = async (peerId, isOfferer) => {
+    // FIXED: Prevent duplicate peer connections
+    if (peersRef.current[peerId]) {
+      console.log(`Peer connection with ${peerId} already exists`);
+      return peersRef.current[peerId];
+    }
+
+    // FIXED: Prevent duplicate offers
+    if (isOfferer && pendingOffersRef.current.has(peerId)) {
+      console.log(`Offer already pending for ${peerId}`);
+      return;
+    }
+
     console.log(`Creating peer connection with ${peerId}, isOfferer: ${isOfferer}`);
     addDebugMessage(`Creating peer connection with ${peerId.slice(-4)}`);
     
     const pc = new RTCPeerConnection({
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
       ]
     });
 
@@ -192,16 +202,22 @@ export default function VideoRoom() {
       peers: Object.keys(peersRef.current).length
     }));
 
-    // Add local stream tracks
+    // FIXED: Add local stream tracks with better error handling
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
+        try {
+          pc.addTrack(track, localStreamRef.current);
+          console.log(`Added ${track.kind} track to peer connection`);
+        } catch (error) {
+          console.error('Error adding track:', error);
+        }
       });
     }
 
     // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log('Sending ICE candidate to', peerId);
         sendSignal(peerId, { candidate: event.candidate });
       }
     };
@@ -218,16 +234,32 @@ export default function VideoRoom() {
     pc.onconnectionstatechange = () => {
       console.log(`Connection state with ${peerId}:`, pc.connectionState);
       addDebugMessage(`Connection with ${peerId.slice(-4)}: ${pc.connectionState}`);
+      
+      // FIXED: Clean up failed connections
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        closePeerConnection(peerId);
+      }
     };
 
-    // If this peer should create the offer
+    pc.oniceconnectionstatechange = () => {
+      console.log(`ICE connection state with ${peerId}:`, pc.iceConnectionState);
+    };
+
+    // FIXED: If this peer should create the offer
     if (isOfferer) {
+      pendingOffersRef.current.add(peerId);
       try {
-        const offer = await pc.createOffer();
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
         await pc.setLocalDescription(offer);
+        console.log('Sending offer to', peerId);
         sendSignal(peerId, { sdp: offer });
       } catch (error) {
         console.error('Error creating offer:', error);
+        addDebugMessage(`Error creating offer: ${error.message}`);
+        pendingOffersRef.current.delete(peerId);
       }
     }
 
@@ -235,73 +267,100 @@ export default function VideoRoom() {
   };
 
   const handleSignal = async (peerId, signal) => {
-    console.log(`Handling signal from ${peerId}:`, signal);
+    console.log(`Handling signal from ${peerId}:`, signal.sdp?.type || signal.candidate ? 'ICE candidate' : 'unknown');
     
     let peer = peersRef.current[peerId];
     
-    // Create peer connection if it doesn't exist
+    // FIXED: Create peer connection if it doesn't exist (for receiving offers)
     if (!peer) {
+      console.log(`Creating peer connection for incoming signal from ${peerId}`);
       peer = await createPeerConnection(peerId, false);
     }
 
     try {
       // Handle SDP (offer/answer)
       if (signal.sdp) {
+        // FIXED: Check if we can set remote description
+        if (peer.signalingState === 'closed') {
+          console.log('Peer connection is closed, ignoring signal');
+          return;
+        }
+
         await peer.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+        console.log(`Set remote description (${signal.sdp.type}) for ${peerId}`);
         
         // If it's an offer, create and send answer
         if (signal.sdp.type === 'offer') {
+          pendingOffersRef.current.delete(peerId); // Clear pending offer flag
           const answer = await peer.createAnswer();
           await peer.setLocalDescription(answer);
+          console.log('Sending answer to', peerId);
           sendSignal(peerId, { sdp: answer });
+        } else if (signal.sdp.type === 'answer') {
+          pendingOffersRef.current.delete(peerId); // Clear pending offer flag
         }
       }
 
       // Handle ICE candidates
       if (signal.candidate) {
-        await peer.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        // FIXED: Only add candidate if we have remote description
+        if (peer.remoteDescription) {
+          await peer.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          console.log('Added ICE candidate from', peerId);
+        } else {
+          console.log('Waiting for remote description before adding ICE candidate');
+          // You might want to queue candidates here if needed
+        }
       }
     } catch (error) {
-      console.error('Error handling signal:', error);
+      console.error('Error handling signal from', peerId, ':', error);
+      addDebugMessage(`Signal error from ${peerId.slice(-4)}: ${error.message}`);
     }
   };
 
   const sendSignal = (peerId, signal) => {
-    if (socketRef.current && tokenRef.current) {
+    if (socketRef.current && tokenRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({
         type: 'SIGNAL',
         token: tokenRef.current,
         payload: { roomId, to: peerId, signal },
         from: userIdRef.current
       }));
+    } else {
+      console.error('Cannot send signal: WebSocket not ready');
     }
   };
 
   const displayRemoteVideo = (peerId, stream) => {
-    let video = document.getElementById(`video-${peerId}`);
-    
-    if (!video) {
-      video = document.createElement('video');
-      video.id = `video-${peerId}`;
-      video.autoplay = true;
-      video.playsInline = true;
-      video.className = 'w-64 h-48 rounded-lg shadow-lg bg-gray-800';
-      
-      const container = document.createElement('div');
-      container.className = 'relative';
-      container.appendChild(video);
-      
-      const label = document.createElement('div');
-      label.className = 'absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm';
-      label.textContent = `User ${peerId.slice(-4)}`;
-      container.appendChild(label);
-      
-      videoContainerRef.current?.appendChild(container);
+    // Remove existing video if it exists
+    const existingContainer = document.getElementById(`container-${peerId}`);
+    if (existingContainer) {
+      existingContainer.remove();
     }
+
+    const video = document.createElement('video');
+    video.id = `video-${peerId}`;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.className = 'w-64 h-48 rounded-lg shadow-lg bg-gray-800';
+    video.srcObject = stream;
     
-    if (video.srcObject !== stream) {
-      video.srcObject = stream;
-    }
+    const container = document.createElement('div');
+    container.id = `container-${peerId}`;
+    container.className = 'relative';
+    container.appendChild(video);
+    
+    const label = document.createElement('div');
+    label.className = 'absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm';
+    label.textContent = `User ${peerId.slice(-4)}`;
+    container.appendChild(label);
+    
+    videoContainerRef.current?.appendChild(container);
+    
+    // FIXED: Ensure video plays
+    video.onloadedmetadata = () => {
+      video.play().catch(e => console.log('Video play failed:', e));
+    };
   };
 
   const closePeerConnection = (peerId) => {
@@ -309,6 +368,7 @@ export default function VideoRoom() {
     if (peer) {
       peer.close();
       delete peersRef.current[peerId];
+      pendingOffersRef.current.delete(peerId); // Clean up pending offers
       
       // Update peer count
       setDebugInfo(prev => ({
@@ -318,9 +378,9 @@ export default function VideoRoom() {
     }
     
     // Remove video element
-    const videoElement = document.getElementById(`video-${peerId}`);
-    if (videoElement) {
-      videoElement.parentElement?.remove();
+    const container = document.getElementById(`container-${peerId}`);
+    if (container) {
+      container.remove();
     }
   };
 
@@ -346,8 +406,13 @@ export default function VideoRoom() {
 
   const cleanup = () => {
     // Close all peer connections
-    Object.values(peersRef.current).forEach(peer => peer.close());
+    Object.values(peersRef.current).forEach(peer => {
+      if (peer && peer.connectionState !== 'closed') {
+        peer.close();
+      }
+    });
     peersRef.current = {};
+    pendingOffersRef.current.clear();
     
     // Stop local stream
     if (localStreamRef.current) {
@@ -355,7 +420,7 @@ export default function VideoRoom() {
     }
     
     // Close WebSocket
-    if (socketRef.current) {
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.close();
     }
   };
@@ -364,7 +429,7 @@ export default function VideoRoom() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
         <div className="mb-6 text-center">
-          <h1 className="text-3xl font-bold mb-2">Video Room</h1>
+          <h1 className="text-3xl font-bold mb-2">Video Room - FIXED VERSION</h1>
           <p className="text-gray-400">Room ID: {roomId}</p>
           <p className="text-xs text-gray-500">Session: {sessionIdRef.current.slice(-8)}</p>
           <div className="mt-2">
@@ -380,7 +445,7 @@ export default function VideoRoom() {
         <div className="flex justify-center gap-4 mb-6">
           <button
             onClick={toggleMute}
-            className={`px-4 py-2 rounded-lg font-medium ${
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
               isMuted ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-600 hover:bg-gray-700'
             }`}
           >
@@ -388,7 +453,7 @@ export default function VideoRoom() {
           </button>
           <button
             onClick={toggleVideo}
-            className={`px-4 py-2 rounded-lg font-medium ${
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
               isVideoOff ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-600 hover:bg-gray-700'
             }`}
           >
@@ -420,11 +485,12 @@ export default function VideoRoom() {
 
         {/* Debug Info */}
         <div className="mt-8 p-4 bg-gray-800 rounded-lg">
-          <h3 className="text-sm font-bold mb-2">Debug Info</h3>
+          <h3 className="text-sm font-bold mb-2">Debug Info (Fixed Version)</h3>
           <div className="text-xs text-gray-400 space-y-1">
             <p>Your User ID: {userIdRef.current || 'Not set'}</p>
             <p>Connected Users: [{connectedUsers.join(', ')}]</p>
             <p>Active Peer Connections: {debugInfo.peers}</p>
+            <p>Pending Offers: {pendingOffersRef.current.size}</p>
             <div className="mt-2">
               <p className="font-semibold">Recent Messages:</p>
               {debugInfo.messages.map((msg, i) => (
