@@ -10,7 +10,7 @@ export default function RegisterPage() {
   const [password, setPassword] = useState("");
 
 
-const handleRegister = async (e) => {
+const handleRegister = async (e: React.FormEvent<HTMLFormElement>) => {
   e.preventDefault();
 
   try {

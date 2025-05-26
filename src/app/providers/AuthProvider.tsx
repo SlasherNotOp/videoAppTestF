@@ -1,12 +1,22 @@
 'use client';
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useState, ReactNode } from 'react';
 
-const AuthContext = createContext(null);
+interface AuthContextType {
+  token: string | null;
+  login: (token: string) => void;
+  logout: () => void;
+}
 
-export default function AuthProvider({ children }) {
-  const [token, setToken] = useState(null);
+interface AuthProviderProps {
+  children: ReactNode;
+}
 
-  const login = (token) => setToken(token);
+const AuthContext = createContext<AuthContextType | null>(null);
+
+export default function AuthProvider({ children }: AuthProviderProps) {
+  const [token, setToken] = useState<string | null>(null);
+
+  const login = (token: string) => setToken(token);
   const logout = () => setToken(null);
 
   return (
@@ -16,4 +26,10 @@ export default function AuthProvider({ children }) {
   );
 }
 
-export const useAuth = () => useContext(AuthContext);
+export const useAuth = (): AuthContextType => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};

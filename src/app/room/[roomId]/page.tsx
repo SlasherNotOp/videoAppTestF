@@ -1,24 +1,42 @@
+/* eslint-disable */
 'use client';
+
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+
+interface WebSocketMessage {
+  type: string;
+  token?: string;
+  from?: string;
+  payload?: any;
+  userId?: string;
+}
+
+interface DebugInfo {
+  peers: number;
+  messages: string[];
+}
 
 export default function VideoRoom() {
   const roomId = "test-room-123";
+  const router = useRouter();
+  
   // Generate unique session ID for each tab/instance
   const sessionIdRef = useRef(`user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
-  const localVideoRef = useRef(null);
-  const videoContainerRef = useRef(null);
-  const socketRef = useRef(null);
-  const tokenRef = useRef(null);
-  const userIdRef = useRef(null);
-  const peersRef = useRef({});
-  const localStreamRef = useRef(null);
-  const pendingOffersRef = useRef(new Set()); // Track pending offers to avoid duplicates
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const videoContainerRef = useRef<HTMLDivElement | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const tokenRef = useRef<string | null>(null);
+  const userIdRef = useRef<string | null>(null);
+  const peersRef = useRef<Record<string, RTCPeerConnection>>({});
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const pendingOffersRef = useRef(new Set<string>()); // Track pending offers to avoid duplicates
   
   const [isConnected, setIsConnected] = useState(false);
-  const [connectedUsers, setConnectedUsers] = useState([]);
+  const [connectedUsers, setConnectedUsers] = useState<string[]>([]);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
-  const [debugInfo, setDebugInfo] = useState({ peers: 0, messages: [] });
+  const [debugInfo, setDebugInfo] = useState<DebugInfo>({ peers: 0, messages: [] });
 
   useEffect(() => {
     initializeConnection();
@@ -28,7 +46,7 @@ export default function VideoRoom() {
     };
   }, []);
 
-  const addDebugMessage = (message) => {
+  const addDebugMessage = (message: string) => {
     setDebugInfo(prev => ({
       ...prev,
       messages: [...prev.messages.slice(-4), `${new Date().toLocaleTimeString()}: ${message}`]
@@ -52,15 +70,15 @@ export default function VideoRoom() {
       joinRoom();
     };
 
-    ws.onmessage = async (event) => {
+    ws.onmessage = async (event: MessageEvent) => {
       try {
-        const msg = JSON.parse(event.data);
+        const msg: WebSocketMessage = JSON.parse(event.data);
         console.log('Received message:', msg);
         addDebugMessage(`Received: ${msg.type} from ${msg.from || 'server'}`);
         await handleWebSocketMessage(msg);
       } catch (error) {
         console.error('Error handling message:', error);
-        addDebugMessage(`Error: ${error.message}`);
+        addDebugMessage(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     };
 
@@ -70,19 +88,19 @@ export default function VideoRoom() {
       setIsConnected(false);
     };
 
-    ws.onerror = (error) => {
+    ws.onerror = (error: Event) => {
       console.error('WebSocket error:', error);
-      addDebugMessage(`WebSocket error: ${error.message || 'Connection failed'}`);
+      addDebugMessage(`WebSocket error: Connection failed`);
     };
   };
 
-  const handleWebSocketMessage = async (msg) => {
+  const handleWebSocketMessage = async (msg: WebSocketMessage) => {
     const { type, token, from, payload, userId } = msg;
 
     switch (type) {
       case 'LOGIN_SUCCESS':
-        tokenRef.current = token;
-        userIdRef.current = msg.userId;
+        tokenRef.current = token || null;
+        userIdRef.current = msg.userId || null;
         await initializeMedia();
         break;
 
@@ -133,6 +151,7 @@ export default function VideoRoom() {
       case 'UNAUTHORIZED':
         console.error('Unauthorized access');
         addDebugMessage('Unauthorized - check token');
+        router.push(`/register`);
         break;
 
       default:
@@ -156,7 +175,7 @@ export default function VideoRoom() {
       addDebugMessage('Camera and microphone initialized');
     } catch (error) {
       console.error('Error accessing media devices:', error);
-      addDebugMessage(`Media error: ${error.message}`);
+      addDebugMessage(`Media error: ${error instanceof Error ? error.message : 'Unknown error'}`);
       alert('Could not access camera/microphone. Please check permissions.');
     }
   };
@@ -171,7 +190,7 @@ export default function VideoRoom() {
     }
   };
 
-  const createPeerConnection = async (peerId, isOfferer) => {
+  const createPeerConnection = async (peerId: string, isOfferer: boolean): Promise<RTCPeerConnection | undefined> => {
     // FIXED: Prevent duplicate peer connections
     if (peersRef.current[peerId]) {
       console.log(`Peer connection with ${peerId} already exists`);
@@ -207,8 +226,10 @@ export default function VideoRoom() {
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         try {
-          pc.addTrack(track, localStreamRef.current);
-          console.log(`Added ${track.kind} track to peer connection`);
+          if (localStreamRef.current) {
+            pc.addTrack(track, localStreamRef.current);
+            console.log(`Added ${track.kind} track to peer connection`);
+          }
         } catch (error) {
           console.error('Error adding track:', error);
         }
@@ -216,7 +237,7 @@ export default function VideoRoom() {
     }
 
     // Handle ICE candidates
-    pc.onicecandidate = (event) => {
+    pc.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate) {
         console.log('Sending ICE candidate to', peerId);
         sendSignal(peerId, { candidate: event.candidate });
@@ -224,7 +245,7 @@ export default function VideoRoom() {
     };
 
     // Handle remote stream
-    pc.ontrack = (event) => {
+    pc.ontrack = (event: RTCTrackEvent) => {
       console.log('Received remote stream from:', peerId);
       addDebugMessage(`Received video from ${peerId.slice(-4)}`);
       const remoteStream = event.streams[0];
@@ -259,7 +280,7 @@ export default function VideoRoom() {
         sendSignal(peerId, { sdp: offer });
       } catch (error) {
         console.error('Error creating offer:', error);
-        addDebugMessage(`Error creating offer: ${error.message}`);
+        addDebugMessage(`Error creating offer: ${error instanceof Error ? error.message : 'Unknown error'}`);
         pendingOffersRef.current.delete(peerId);
       }
     }
@@ -267,15 +288,17 @@ export default function VideoRoom() {
     return pc;
   };
 
-  const handleSignal = async (peerId, signal) => {
+  const handleSignal = async (peerId: string, signal: any) => {
     console.log(`Handling signal from ${peerId}:`, signal.sdp?.type || signal.candidate ? 'ICE candidate' : 'unknown');
     
-    let peer = peersRef.current[peerId];
+    let peer:RTCPeerConnection | undefined = peersRef.current[peerId];
     
     // FIXED: Create peer connection if it doesn't exist (for receiving offers)
     if (!peer) {
       console.log(`Creating peer connection for incoming signal from ${peerId}`);
+      
       peer = await createPeerConnection(peerId, false);
+      if (!peer) return;
     }
 
     try {
@@ -315,11 +338,11 @@ export default function VideoRoom() {
       }
     } catch (error) {
       console.error('Error handling signal from', peerId, ':', error);
-      addDebugMessage(`Signal error from ${peerId.slice(-4)}: ${error.message}`);
+      addDebugMessage(`Signal error from ${peerId.slice(-4)}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
-  const sendSignal = (peerId, signal) => {
+  const sendSignal = (peerId: string, signal: any) => {
     if (socketRef.current && tokenRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({
         type: 'SIGNAL',
@@ -332,7 +355,7 @@ export default function VideoRoom() {
     }
   };
 
-  const displayRemoteVideo = (peerId, stream) => {
+  const displayRemoteVideo = (peerId: string, stream: MediaStream) => {
     // Remove existing video if it exists
     const existingContainer = document.getElementById(`container-${peerId}`);
     if (existingContainer) {
@@ -364,7 +387,7 @@ export default function VideoRoom() {
     };
   };
 
-  const closePeerConnection = (peerId) => {
+  const closePeerConnection = (peerId: string) => {
     const peer = peersRef.current[peerId];
     if (peer) {
       peer.close();
