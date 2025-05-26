@@ -4,28 +4,29 @@ import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import axios from "axios";
 
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
 
-  const handleLogin = async (e) => {
+const handleRegister = async (e) => {
   e.preventDefault();
 
   try {
-    const res = await axios.post("https://garland.mohitsasane.tech/chat/api/auth/login", {
+    const res = await axios.post("https://garland.mohitsasane.tech/chat/api/auth/register", {
       email,
       password,
     });
 
-    const { token, user } = res.data;
+    // const { token, user } = res.data;
 
-    localStorage.setItem("token", token);
-    localStorage.setItem("user", JSON.stringify(user));
+    // localStorage.setItem("token", token);
+    // localStorage.setItem("user", JSON.stringify(user));
 
     console.log("Login successful:", res.data);
-    router.push("/");
+    router.push("/login");
+
   } catch (err) {
     if (axios.isAxiosError(err) && err.response) {
       alert(err.response.data?.message || "Login failed");
@@ -34,7 +35,7 @@ export default function LoginPage() {
       alert("An unexpected error occurred.");
     }
   }
-  };
+};
 
   return (
     <motion.div
@@ -45,12 +46,12 @@ export default function LoginPage() {
     >
       <motion.form
         className="bg-white p-8 rounded shadow-md w-96"
-        onSubmit={handleLogin}
+        onSubmit={handleRegister}
         initial={{ y: 50, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ delay: 0.2 }}
       >
-        <h2 className="text-2xl mb-6 font-bold text-center">Login</h2>
+        <h2 className="text-2xl mb-6 font-bold text-center">Register</h2>
         <input
           type="email"
           placeholder="Email"
